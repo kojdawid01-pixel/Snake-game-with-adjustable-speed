@@ -1,0 +1,331 @@
+import pygame
+import random
+import os
+
+pygame.init()
+
+# --- HIGH SCORE SPARFIL ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # hittar mappen där spelet ligger
+SCORE_FILE = os.path.join(BASE_DIR, "highscore.txt") # skapar sökväg till highscore.txt
+
+def load_high_score():
+    if os.path.exists(SCORE_FILE): # kollar om filen finns
+        with open(SCORE_FILE, "r") as file:
+            data = file.read().strip()
+            if data.isdigit():
+                return int(data)
+    return 0
+
+def save_high_score(new_score): #rekord poäng funktion
+    with open(SCORE_FILE, "w") as file:
+        file.write(str(new_score))
+
+high_score = load_high_score() # laddar sparat rekord vid start
+
+WIDTH = 360 # bredden på spelen
+HEIGHT = 300 # höjden på spelet
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Snake Game")
+
+BLACK = (18, 18, 18) # talar för systemet vilket färg är svart med RGB
+WHITE = (255, 255, 255) # talar för systemet vilket färg är vit med RGB 255,255,255
+GREEN = (0, 128, 0) # talar för systemet vilket färg är grön med RGB 0,128,0
+RED = (255, 0, 0) # talar för systemet vilket färg är röd med RGB 255,0,0
+GRAY = (120, 120, 120) # grå färg RGB
+BLUE = (70, 140, 230) # blå färg RGB
+GOLD = (255, 215, 0) # guld färg för highscore RGB
+
+BLOCK_SIZE = 30 # hur stort ytan ormen har blocket 30 viktigt att när man väljer spel storlek ska man följa figurens storlekt exempel 30 60 90 120 150
+OVERLAP = 8 # extra pixlar så ormens delar överlappar utan glipor
+SPRITE_DIM = BLOCK_SIZE + OVERLAP
+
+#laddar bilden från files
+def load_and_slice_sheet(filename):
+    path = os.path.join(BASE_DIR, filename)
+    sheet = pygame.image.load(path).convert_alpha()
+    sw, sh = sheet.get_size()
+
+  
+
+    def get_cropped(qx, qy, qw, qh):
+        sub = sheet.subsurface((qx, qy, qw, qh))
+        rect = sub.get_bounding_rect()
+        return sub.subsurface(rect)
+
+    half_w, half_h = sw // 2, sh // 2
+    body_thickness = int(SPRITE_DIM * 0.62)
+
+    # 1. Huvudet (uppe till vänster)
+    raw_head = get_cropped(0, 0, half_w, half_h)
+    scaled_head = pygame.transform.smoothscale(raw_head, (SPRITE_DIM, int(SPRITE_DIM * 0.85)))
+    head = pygame.Surface((SPRITE_DIM, SPRITE_DIM), pygame.SRCALPHA)
+    head.blit(scaled_head, (0, (SPRITE_DIM - scaled_head.get_height()) // 2))
+
+    # 2. Rak kropp (uppe till höger)
+    raw_body = get_cropped(half_w, 0, half_w, half_h)
+    scaled_body = pygame.transform.smoothscale(raw_body, (SPRITE_DIM + 4, body_thickness))
+    body = pygame.Surface((SPRITE_DIM, SPRITE_DIM), pygame.SRCALPHA)
+    body.blit(scaled_body, (-2, (SPRITE_DIM - body_thickness) // 2))
+
+    # 3. Svängd kropp / hörn (nere till vänster)
+    raw_corner = get_cropped(0, half_h, half_w, half_h)
+    corner_size = int(SPRITE_DIM * 0.82)
+    scaled_corner = pygame.transform.smoothscale(raw_corner, (corner_size, corner_size))
+    corner = pygame.Surface((SPRITE_DIM, SPRITE_DIM), pygame.SRCALPHA)
+    corner.blit(scaled_corner, (SPRITE_DIM - corner_size, SPRITE_DIM - corner_size))
+    corner = pygame.transform.flip(corner, False, True)
+
+    # 4. Svansen (nere till höger)
+    raw_tail = get_cropped(half_w, half_h, half_w, half_h)
+    scaled_tail = pygame.transform.smoothscale(raw_tail, (SPRITE_DIM, body_thickness))
+    scaled_tail = pygame.transform.flip(scaled_tail, True, False)
+    tail = pygame.Surface((SPRITE_DIM, SPRITE_DIM), pygame.SRCALPHA)
+    tail.blit(scaled_tail, (2, (SPRITE_DIM - body_thickness) // 2))
+
+    return head, body, corner, tail
+
+HEAD_IMG, BODY_IMG, CORNER_IMG, TAIL_IMG = load_and_slice_sheet("Copperhead Snake Sprite Sheet.png")
+
+def load_apple(filename):
+    path = os.path.join(BASE_DIR, filename)
+    img = pygame.image.load(path).convert_alpha()
+    w, h = img.get_size()
+    bg_color = img.get_at((0, 0)) # Hämtar bakgrundsfärgen från övre vänstra hörnet
+
+    # Gör bakgrunden genomskinlig (tolerans 20 för JPEG-komprimering)
+    for x in range(w):
+        for y in range(h):
+            r, g, b, a = img.get_at((x, y))
+            if abs(r - bg_color[0]) < 20 and abs(g - bg_color[1]) < 20 and abs(b - bg_color[2]) < 20:
+                img.set_at((x, y), (0, 0, 0, 0))
+
+    rect = img.get_bounding_rect()
+    cropped = img.subsurface(rect)
+    return pygame.transform.smoothscale(cropped, (BLOCK_SIZE, BLOCK_SIZE))
+
+APPLE_IMG = load_apple("applesnake.jpg")
+
+def get_angle(dx, dy): # räknar ut vinkeln beroende på vilket håll ormen rör sig
+    if dx > 0: return 0
+    if dx < 0: return 180
+    if dy < 0: return 90
+    return -90
+
+def draw_snake(snake_list, dir_x, dir_y): # ritar ut huvud, kropp, hörn och svans
+    offset = OVERLAP // 2
+    for i in range(len(snake_list) - 1, -1, -1):
+        sx, sy = snake_list[i]
+        if i == 0:
+            img = pygame.transform.rotate(HEAD_IMG, get_angle(dir_x, dir_y))
+        elif i == len(snake_list) - 1:
+            prev_x, prev_y = snake_list[i - 1]
+            img = pygame.transform.rotate(TAIL_IMG, get_angle(prev_x - sx, prev_y - sy))
+        else:
+            prev_x, prev_y = snake_list[i - 1]
+            next_x, next_y = snake_list[i + 1]
+            d1 = (prev_x - sx, prev_y - sy)
+            d2 = (next_x - sx, next_y - sy)
+
+            if d1[0] == -d2[0] or d1[1] == -d2[1]:
+                img = pygame.transform.rotate(BODY_IMG, get_angle(d1[0], d1[1]))
+            else:
+                dirs = {d1, d2}
+                if {(0, -BLOCK_SIZE), (BLOCK_SIZE, 0)} == dirs:
+                    angle = 0
+                elif {(0, -BLOCK_SIZE), (-BLOCK_SIZE, 0)} == dirs:
+                    angle = 90
+                elif {(0, BLOCK_SIZE), (-BLOCK_SIZE, 0)} == dirs:
+                    angle = 180
+                else:
+                    angle = -90
+                img = pygame.transform.rotate(CORNER_IMG, angle)
+
+        screen.blit(img, (sx - offset, sy - offset))
+
+snake = [(180, 150), (150, 150), (120, 150)] # vart ormen ska börja när man börjar
+orb_x = random.randrange(0, WIDTH, BLOCK_SIZE) # x axeln på vart poängen ska spawn 
+orb_y = random.randrange(0, HEIGHT, BLOCK_SIZE) # y axeln på vart poängen ska startas
+clock = pygame.time.Clock()
+dx = BLOCK_SIZE # dx blir en block senare i koden för att göra rörelsen enklare
+dy = 0 # dy blir en block senare i koden för att göra rörelsen enklare
+score = 0 # start poäng när man börjar
+lives = 3 # start liv när man börjar
+game_over = False # om livet är inte noll så stoppas ej programmet
+font = pygame.font.SysFont(None, 32) # font skriv stylet på texter
+hud_font = pygame.font.SysFont(None, 24) # mindre font så Score, Best och Hearts får plats i toppen
+
+# MENU
+MIN_SPEED, MAX_SPEED = 2, 15 # block som gör vad är minsta fart och snabbaste fart
+snake_speed = 4 # fart på ormen hitills (default)
+paused = True # spelet är pausad när det väljs fart i starten
+dragging_slider = False # avslutar fart editor
+
+play_btn = pygame.Rect(90, 65, 180, 38) # start knappen och dens rektangel form och kordinater
+slider_track = pygame.Rect(80, 155, 200, 9) # ritar upp själva editor för farten
+quit_btn = pygame.Rect(90, 205, 180, 38) # ritar knappen för att avsluta spelet
+
+def draw_button(rect, text, color):
+    is_hovered = rect.collidepoint(pygame.mouse.get_pos())
+    draw_color = tuple(min(255, c + 30) for c in color) if is_hovered else color
+    pygame.draw.rect(screen, draw_color, rect, border_radius=6)
+    label = font.render(text, True, WHITE)
+    screen.blit(label, label.get_rect(center=rect.center))
+
+def draw_menu(speed):
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 190))
+    screen.blit(overlay, (0, 0))
+    draw_button(play_btn, "Play / Resume", GREEN)
+    draw_button(quit_btn, "Quit", RED)
+
+    speed_text = font.render(f"Speed: {speed}", True, WHITE)
+    screen.blit(speed_text, speed_text.get_rect(center=(WIDTH // 2, 130)))
+
+    pygame.draw.rect(screen, GRAY, slider_track, border_radius=4)
+    ratio = (speed - MIN_SPEED) / (MAX_SPEED - MIN_SPEED)
+    handle_x = int(slider_track.left + ratio * slider_track.width)
+    pygame.draw.circle(screen, BLUE, (handle_x, slider_track.centery), 10)
+
+can_turn = True # låser så man bara kan svänga en gång per ruta (hindrar att ormen krockar i sig själv)
+last_move_time = 0 # håller koll på när ormen flyttade sig senast
+running = True # spelet igång
+def create_grass_background():
+    bg = pygame.Surface((WIDTH, HEIGHT))
+    grass_dark = (26, 46, 28)
+    grass_light = (31, 54, 33)
+    blade_color = (42, 74, 44)
+    pebble_color = (55, 65, 55)
+
+    for gx in range(0, WIDTH, BLOCK_SIZE):
+        for gy in range(0, HEIGHT, BLOCK_SIZE):
+            # Alternerande schackrutor så man alltid ser rutnätet tydligt
+            is_even = ((gx // BLOCK_SIZE) + (gy // BLOCK_SIZE)) % 2 == 0
+            tile_color = grass_light if is_even else grass_dark
+            pygame.draw.rect(bg, tile_color, (gx, gy, BLOCK_SIZE, BLOCK_SIZE))
+
+            # Lägg till små grässtrån eller stenar i vissa rutor
+            seed = (gx * 7 + gy * 13) % 11
+            if seed in (1, 4):
+                pygame.draw.line(bg, blade_color, (gx + 8, gy + 20), (gx + 6, gy + 14), 2)
+                pygame.draw.line(bg, blade_color, (gx + 10, gy + 20), (gx + 13, gy + 15), 2)
+            elif seed == 7:
+                pygame.draw.circle(bg, pebble_color, (gx + 20, gy + 18), 2)
+
+    return bg
+
+BG_IMG = create_grass_background()
+
+while running: # när spelet är i gång
+    for event in pygame.event.get(): # fungerar som en loop som går igenom ex. knappar och funktioner
+        if event.type == pygame.QUIT:
+            running = False
+        if event.type == pygame.KEYDOWN: # kollar om en knapp trycks hitills med ingen mer information
+            if event.key in (pygame.K_ESCAPE, pygame.K_m) and not game_over:
+                paused = not paused
+                dragging_slider = False
+            if not paused and can_turn:
+                if event.key == pygame.K_DOWN and dy == 0: # kollar om det var just ner pillen
+                    dx = 0 # rör ej på sidor
+                    dy = BLOCK_SIZE # rör neråt
+                    can_turn = False
+                if event.key == pygame.K_UP and dy == 0: # om knappen pill up trycks så
+                    dx = 0 # ej på sidor
+                    dy = -BLOCK_SIZE # men upp går figuren
+                    can_turn = False
+                if event.key == pygame.K_LEFT and dx == 0: # Om knappen pill vänster så
+                    dx = -BLOCK_SIZE # rör sig figuren vänster
+                    dy = 0 # men inte upp eller ner
+                    can_turn = False
+                if event.key == pygame.K_RIGHT and dx == 0: # om knappen pill höger så
+                    dx = BLOCK_SIZE # rör sig höger
+                    dy = 0 # men inte upp eller ner
+                    can_turn = False
+            if event.key == pygame.K_q: # funktion för slutet av spelen när man förlorat q innebär avsluta spelet
+                running = False # avslutar spelet
+            if event.key == pygame.K_r and game_over: # men om knappen R så kör man om
+                score = 0
+                lives = 3
+                snake = [(180, 150), (150, 150), (120, 150)]
+                dx = BLOCK_SIZE
+                dy = 0
+                can_turn = True
+                game_over = False
+
+        if paused:
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if play_btn.collidepoint(event.pos):
+                    paused = False
+                elif quit_btn.collidepoint(event.pos):
+                    running = False
+
+                elif slider_track.inflate(20, 24).collidepoint(event.pos):
+                    dragging_slider = True
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                dragging_slider = False
+
+    if paused and dragging_slider:
+        mouse_x = pygame.mouse.get_pos()[0]
+        ratio = max(0.0, min(1.0, (mouse_x - slider_track.left) / slider_track.width))
+        snake_speed = int(round(MIN_SPEED + ratio * (MAX_SPEED - MIN_SPEED)))
+
+    if not game_over and not paused:
+        current_time = pygame.time.get_ticks()
+        move_delay = 1000 // snake_speed
+        if current_time - last_move_time >= move_delay:
+            last_move_time = current_time
+            can_turn = True
+            new_head = (snake[0][0] + dx, snake[0][1] + dy)
+            if new_head[0] < 0 or new_head[0] >= WIDTH or new_head[1] < 0 or new_head[1] >= HEIGHT or new_head in snake[1:]:
+                lives -= 1
+                if lives > 0:
+                    snake = [(180, 150)] * len(snake)
+                    dx, dy = BLOCK_SIZE, 0
+                else:
+                    game_over = True
+            else:
+                snake.insert(0, new_head)
+                if (orb_x, orb_y) in snake:
+                    score += 1
+                    if score > high_score:
+                        high_score = score
+                        save_high_score(high_score)
+                    orb_x = random.randrange(0, WIDTH, BLOCK_SIZE)
+                    orb_y = random.randrange(0, HEIGHT, BLOCK_SIZE)
+                else:
+                    snake.pop()
+
+    screen.blit(BG_IMG, (0, 0))
+
+    for x in range(0, WIDTH, BLOCK_SIZE):
+        pygame.draw.line(screen, (32, 32, 32), (x, 0), (x, HEIGHT))
+    for y in range(0, HEIGHT, BLOCK_SIZE):
+        pygame.draw.line(screen, (32, 32, 32), (0, y), (WIDTH, y))
+
+    screen.blit(APPLE_IMG, (orb_x, orb_y)) # ritar ut pixel-art äpplet
+    draw_snake(snake, dx, dy) # ritar ut ormen med sprite-bilder
+
+    
+    draw_snake(snake, dx, dy)
+
+    if not paused:
+        score_text = hud_font.render(f"Score: {score}", True, WHITE)
+        lives_text = hud_font.render(f"Hearts: {lives}", True, RED)
+        if score > 0 and score == high_score:
+            best_text = hud_font.render(f"NEW BEST: {high_score}", True, GOLD)
+        else:
+            best_text = hud_font.render(f"Best: {high_score}", True, GRAY)
+
+        screen.blit(score_text, (10, 10))
+        screen.blit(best_text, best_text.get_rect(midtop=(WIDTH // 2, 10)))
+        screen.blit(lives_text, lives_text.get_rect(topright=(WIDTH - 10, 10)))
+
+    if game_over:
+        over_text = font.render("GAME OVER! R = Play Q = QUIT", True, WHITE)
+        screen.blit(over_text, over_text.get_rect(center=(WIDTH // 2, HEIGHT // 2)))
+    elif paused:
+        draw_menu(snake_speed) #funktion för börjar visar orm farten
+
+    pygame.display.flip()
+    clock.tick(120) # spelet frekvens
+
+pygame.quit()
